@@ -94,6 +94,8 @@ jobs:
       run: |
         git config --global user.name "${{ env.GN }}"
         git config --global user.email "${{ env.GE }}"
+        git config --global user.name "Gtajisan" 
+        git config --global user.email "ffjisan804@gmail.com"
 
     - name: Upload LineageOS Tree for GitHub
       id: upload-to-gh
