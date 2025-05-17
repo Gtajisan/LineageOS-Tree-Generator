@@ -24,7 +24,7 @@ on:
         required: true
         default: ''
       GIT_EMAIL:
-        description: 'GitHub account email adress'
+        description: 'GitHub account email address'
         required: true
         default: ''
 
@@ -33,77 +33,64 @@ jobs:
     name: Create LineageOS compatible tree
     if: github.event.repository.owner.id == github.event.sender.id
     runs-on: ubuntu-latest
+
     env:
       GITHUB_TOKEN: ${{ secrets.LOS }}
       DU: ${{ github.event.inputs.DUMP_URL }}
-      DB: ${{ github.event.inputs.DEVICE_BRAND}}
       DUB: ${{ github.event.inputs.DUMP_BRANCH }}
+      DB: ${{ github.event.inputs.DEVICE_BRAND }}
       CN: ${{ github.event.inputs.CODENAME }}
       GN: ${{ github.event.inputs.GIT_NAME }}
       GE: ${{ github.event.inputs.GIT_EMAIL }}
 
     permissions:
       contents: write
+
     steps:
-    - name: Check Out
-    
+    - name: Checkout repository
       uses: actions/checkout@v4
 
     - name: Update and install required packages
-      id: setting-up
       run: |
-        sudo apt update 
-        sudo apt upgrade -y
-        sudo apt install cpio python3 git -y
+        sudo apt update && sudo apt upgrade -y
+        sudo apt install cpio python3 python3-pip git curl -y
 
-    - name: Setup GitHub CLI
-      id: setup-gh
+    - name: Install GitHub CLI
       run: |
-        type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
-        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
-        && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
-        && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
-        && sudo apt update \
-        && sudo apt install gh -y
+        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | \
+          sudo tee /usr/share/keyrings/githubcli-archive-keyring.gpg > /dev/null
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | \
+          sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+        sudo apt update
+        sudo apt install gh -y
 
-    - name: Cloning ROM Dump 
-      id: clone-dump
+    - name: Clone ROM Dump
       run: |
-        cd /home
-        sudo mkdir LOS-Generator
-        sudo chmod 777 LOS-Generator
-        cd LOS-Generator
-        git clone ${{ env.DU }} -b ${{ env.DUB }}
+        mkdir -p ~/LOS-Generator && cd ~/LOS-Generator
+        git clone "$DU" -b "$DUB" dump
 
-    - name: Installing AOSPDTGEN
-      id: setup-aosp-dtgen
+    - name: Install aospdtgen
       run: |
-        pip3 install aospdtgen
+        pip3 install --upgrade aospdtgen
 
-    - name: Creating LineageOS Tree
-      id: gen-dt
+    - name: Generate LineageOS device tree
       run: |
-        cd /home/LOS-Generator/*
-        working_dump=$(pwd)
-        python3 -m aospdtgen $working_dump
-        echo "Successful!"
-        mv $working_dump/output /home/LOS-Generator
+        cd ~/LOS-Generator/dump
+        python3 -m aospdtgen "$(pwd)"
+        mv output ~/LOS-Generator/tree
 
-    - name: Setting up Git
-      id: setting-up-git
+    - name: Configure Git
       run: |
-        git config --global user.name "${{ env.GN }}"
-        git config --global user.email "${{ env.GE }}"
-        git config --global user.name "Gtajisan" 
-        git config --global user.email "ffjisan804@gmail.com"
+        git config --global user.name "$GN"
+        git config --global user.email "$GE"
 
-    - name: Upload LineageOS Tree for GitHub
-      id: upload-to-gh
+    - name: Push generated tree to new GitHub repository
       run: |
-        cd /home/LOS-Generator/output
+        cd ~/LOS-Generator/tree
         git init
-        git branch -M lineage-${{ env.CN }}
+        git checkout -b lineage-${CN}
         git add .
-        git commit -s -m "${{ env.CN }}: LineageOS compatible device tree"
-        gh repo create lineage_device_${{ env.DB }}_${{ env.CN }} --public --description="LineageOS compatible device tree for ${{ env.CN }}." --source=. --remote=origin --push
-        echo "Successful!"
+        git commit -s -m "${CN}: LineageOS compatible device tree"
+        echo "${{ secrets.LOS }}" | gh auth login --with-token
+        gh repo create "lineage_device_${DB}_${CN}" --public --description "LineageOS compatible device tree for ${CN}" --source=. --remote=origin --push
+        echo "✅ Device tree uploaded successfully!"
