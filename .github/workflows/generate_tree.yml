@@ -50,14 +50,12 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Update and install required packages
-      id: setting-up
       run: |
         echo "📦 Updating system and installing packages..."
         sudo apt update && sudo apt upgrade -y
         sudo apt install -y cpio python3 python3-pip git curl
 
     - name: Setup GitHub CLI
-      id: setup-gh
       run: |
         echo "🔧 Installing GitHub CLI..."
         curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
@@ -66,45 +64,46 @@ jobs:
         sudo apt update && sudo apt install gh -y
 
     - name: Cloning ROM Dump
-      id: clone-dump
       run: |
-        echo "📥 Cloning ROM dump from $DU..."
-        cd /home
-        sudo mkdir LOS-Generator && sudo chmod 777 LOS-Generator
-        cd LOS-Generator
-        git clone "$DU" -b "$DUB" dump
+        echo "📥 Cloning ROM dump from $DU with branch $DUB..."
+        WORKDIR="/home/runner/LOS-Generator"
+        mkdir -p "$WORKDIR"
+        cd "$WORKDIR"
+
+        # Verify branch exists before cloning
+        if git ls-remote --heads "$DU" "$DUB" | grep "$DUB" > /dev/null; then
+          git clone --depth=1 -b "$DUB" "$DU" dump
+        else
+          echo "❌ Error: Branch '$DUB' not found in repository '$DU'."
+          exit 1
+        fi
 
     - name: Installing AOSPDTGEN
-      id: setup-aosp-dtgen
       run: |
         echo "📦 Installing aospdtgen..."
         pip3 install --upgrade aospdtgen
 
     - name: Creating LineageOS Tree
-      id: gen-dt
       run: |
         echo "🔧 Generating device tree..."
-        cd /home/LOS-Generator/dump
+        cd /home/runner/LOS-Generator/dump
         python3 -m aospdtgen .
         if [ ! -d "output" ]; then
           echo "❌ Error: output directory not found. Device tree generation failed."
           exit 1
         fi
-        mv output /home/LOS-Generator
+        mv output /home/runner/LOS-Generator
 
     - name: Setting up Git
-      id: setting-up-git
       run: |
         echo "🔧 Configuring Git..."
         git config --global user.name "${{ env.GN }}"
         git config --global user.email "${{ env.GE }}"
-        # You had two different git names; keeping only user-defined ones
 
-    - name: Upload LineageOS Tree for GitHub
-      id: upload-to-gh
+    - name: Upload LineageOS Tree to GitHub
       run: |
         echo "🚀 Preparing to upload the device tree to GitHub..."
-        cd /home/LOS-Generator/output
+        cd /home/runner/LOS-Generator/output
         git init
         git checkout -b lineage-${{ env.CN }}
         git add .
@@ -112,9 +111,11 @@ jobs:
 
         echo "${{ secrets.LOS }}" | gh auth login --with-token
 
-        if gh repo view "lineage_device_${{ env.DB }}_${{ env.CN }}" > /dev/null 2>&1; then
+        REPO_NAME="lineage_device_${{ env.DB }}_${{ env.CN }}"
+
+        if gh repo view "$REPO_NAME" > /dev/null 2>&1; then
           echo "⚠️ Repository already exists. Cloning and pushing to it..."
-          gh repo clone "lineage_device_${{ env.DB }}_${{ env.CN }}" /tmp/existing_repo
+          gh repo clone "$REPO_NAME" /tmp/existing_repo
           cp -r . /tmp/existing_repo
           cd /tmp/existing_repo
           git add .
@@ -122,15 +123,14 @@ jobs:
           git push origin lineage-${{ env.CN }}
         else
           echo "📁 Creating new repository..."
-          gh repo create "lineage_device_${{ env.DB }}_${{ env.CN }}" --public --description="LineageOS compatible device tree for ${{ env.CN }}." --source=. --remote=origin --push
+          gh repo create "$REPO_NAME" --public --description="LineageOS compatible device tree for ${{ env.CN }}." --source=. --remote=origin --push
         fi
-        echo "✅ Upload completed."
 
     - name: Cleanup
       if: always()
       run: |
         echo "🧹 Cleaning up..."
-        rm -rf /home/LOS-Generator
+        rm -rf /home/runner/LOS-Generator
         rm -rf /tmp/existing_repo || true
 
     - name: Workflow Complete
