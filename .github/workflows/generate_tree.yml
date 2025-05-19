@@ -1,4 +1,4 @@
-name: Auto LineageOS Tree Generator
+name: Auto LineageOS X Tree Generator
 
 on:
   workflow_dispatch:
@@ -33,6 +33,7 @@ jobs:
     name: Create LineageOS compatible tree
     if: github.event.repository.owner.id == github.event.sender.id
     runs-on: ubuntu-latest
+
     env:
       GITHUB_TOKEN: ${{ secrets.LOS }}
       DU: ${{ github.event.inputs.DUMP_URL }}
@@ -70,7 +71,6 @@ jobs:
         mkdir -p "$WORKDIR"
         cd "$WORKDIR"
 
-        # Verify branch exists before cloning
         if git ls-remote --heads "$DU" "$DUB" | grep "$DUB" > /dev/null; then
           git clone --depth=1 -b "$DUB" "$DU" dump
         else
@@ -101,6 +101,8 @@ jobs:
         git config --global user.email "${{ env.GE }}"
 
     - name: Upload LineageOS Tree to GitHub
+      env:
+        GH_TOKEN: ${{ secrets.LOS }}
       run: |
         echo "🚀 Preparing to upload the device tree to GitHub..."
         cd /home/runner/LOS-Generator/output
@@ -109,21 +111,19 @@ jobs:
         git add .
         git commit -s -m "${{ env.CN }}: LineageOS compatible device tree"
 
-        echo "${{ secrets.LOS }}" | gh auth login --with-token
-
         REPO_NAME="lineage_device_${{ env.DB }}_${{ env.CN }}"
+        REMOTE_URL="https://x-access-token:${GH_TOKEN}@github.com/${{ env.GN }}/${REPO_NAME}.git"
 
-        if gh repo view "$REPO_NAME" > /dev/null 2>&1; then
-          echo "⚠️ Repository already exists. Cloning and pushing to it..."
-          gh repo clone "$REPO_NAME" /tmp/existing_repo
-          cp -r . /tmp/existing_repo
-          cd /tmp/existing_repo
-          git add .
-          git commit -s -m "Update LineageOS device tree for ${{ env.CN }}"
-          git push origin lineage-${{ env.CN }}
+        echo "🔍 Checking if the repository exists..."
+        if gh repo view "$REPO_NAME" --json name -q .name > /dev/null 2>&1; then
+          echo "⚠️ Repository already exists. Pushing to it..."
+          git remote add origin "$REMOTE_URL"
+          git push origin lineage-${{ env.CN }} --force
         else
           echo "📁 Creating new repository..."
-          gh repo create "$REPO_NAME" --public --description="LineageOS compatible device tree for ${{ env.CN }}." --source=. --remote=origin --push
+          gh repo create "$REPO_NAME" --public --description="LineageOS compatible device tree for ${{ env.CN }}" --confirm
+          git remote add origin "$REMOTE_URL"
+          git push origin lineage-${{ env.CN }} --set-upstream
         fi
 
     - name: Cleanup
