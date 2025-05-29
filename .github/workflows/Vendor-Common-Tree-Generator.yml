@@ -1,0 +1,116 @@
+name: Vendor Common Tree Generator
+
+on:
+  workflow_dispatch:
+    inputs:
+      SOURCE_TYPE:
+        description: 'Source type: dump / manifest / github_repo / archive_url'
+        required: true
+        default: dump
+      SOURCE_URL:
+        description: 'Source URL (git repo or archive URL)'
+        required: true
+      SOURCE_BRANCH:
+        description: 'Branch or tag (ignored if archive_url)'
+        required: false
+        default: main
+      DEVICE_BRAND:
+        description: 'Device manufacturer (e.g., samsung)'
+        required: true
+      COMMON_NAME:
+        description: 'Common tree name (e.g., sm6225-common)'
+        required: true
+      GIT_NAME:
+        description: 'Your GitHub username'
+        required: true
+      GIT_EMAIL:
+        description: 'Your GitHub email'
+        required: true
+
+jobs:
+  generate-vendor-common-tree:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.LOS }}
+      DEVICE_BRAND: ${{ github.event.inputs.DEVICE_BRAND }}
+      COMMON_NAME: ${{ github.event.inputs.COMMON_NAME }}
+      GIT_NAME: ${{ github.event.inputs.GIT_NAME }}
+      GIT_EMAIL: ${{ github.event.inputs.GIT_EMAIL }}
+
+    steps:
+    - name: Checkout Action Code
+      uses: actions/checkout@v4
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y git cpio python3-pip unzip curl
+        pip3 install --upgrade aospdtgen
+
+    - name: Prepare Source Directory
+      run: |
+        mkdir -p ~/source
+        cd ~/source
+
+        if [ "${{ github.event.inputs.SOURCE_TYPE }}" = "dump" ]; then
+          echo "Cloning dump repo..."
+          git clone --depth=1 -b "${{ github.event.inputs.SOURCE_BRANCH }}" "${{ github.event.inputs.SOURCE_URL }}" source_repo
+          cd source_repo
+        elif [ "${{ github.event.inputs.SOURCE_TYPE }}" = "manifest" ]; then
+          echo "Cloning manifest repo..."
+          git clone --depth=1 -b "${{ github.event.inputs.SOURCE_BRANCH }}" "${{ github.event.inputs.SOURCE_URL }}" source_repo
+          cd source_repo
+        elif [ "${{ github.event.inputs.SOURCE_TYPE }}" = "github_repo" ]; then
+          echo "Cloning GitHub repo..."
+          git clone --depth=1 -b "${{ github.event.inputs.SOURCE_BRANCH }}" "${{ github.event.inputs.SOURCE_URL }}" source_repo
+          cd source_repo
+        elif [ "${{ github.event.inputs.SOURCE_TYPE }}" = "archive_url" ]; then
+          echo "Downloading and extracting archive..."
+          curl -L "${{ github.event.inputs.SOURCE_URL }}" -o source.zip
+          unzip -q source.zip -d extracted
+          # Assume first folder inside extracted is the root source folder
+          cd extracted/*
+        else
+          echo "❌ Unsupported SOURCE_TYPE: ${{ github.event.inputs.SOURCE_TYPE }}"
+          exit 1
+        fi
+
+    - name: Generate Vendor Common Tree
+      run: |
+        echo "Generating vendor common tree for ${DEVICE_BRAND}/${COMMON_NAME}..."
+        python3 -m aospdtgen --type vendor_common .
+        mkdir -p ~/output
+        mv output/* ~/output/
+
+    - name: Cleanup Output
+      run: |
+        cd ~/output
+        rm -rf .git* || true
+        find . -name '*.log' -delete || true
+
+    - name: Setup Git Config
+      run: |
+        git config --global user.name "${GIT_NAME}"
+        git config --global user.email "${GIT_EMAIL}"
+
+    - name: Authenticate GitHub CLI
+      run: |
+        echo "${GH_TOKEN}" | gh auth login --with-token
+
+    - name: Push Vendor Common Tree to GitHub
+      run: |
+        cd ~/output
+        REPO="vendor_${DEVICE_BRAND}_${COMMON_NAME}"
+        if gh repo view "${GIT_NAME}/${REPO}" > /dev/null 2>&1; then
+          echo "Repo exists, pushing updates..."
+          git init
+          git remote add origin https://github.com/${GIT_NAME}/${REPO}.git
+          git checkout -b lineage-21 || git checkout lineage-21
+          git add .
+          git commit -m "${COMMON_NAME}: Update vendor common tree" || echo "No changes to commit"
+          git push origin lineage-21 --force
+        else
+          echo "Creating new repo ${REPO}..."
+          gh repo create "${GIT_NAME}/${REPO}" --public --description "Vendor common tree for ${COMMON_NAME}" --source=. --remote=origin --push
+        fi
+        
