@@ -1,0 +1,106 @@
+name: Device Common Tree Generator
+
+on:
+  workflow_dispatch:
+    inputs:
+      SOURCE_TYPE:
+        description: 'Source type: dump / manifest / github_repo'
+        required: true
+        default: dump
+      SOURCE_URL:
+        description: 'Source URL (dump repo, manifest repo, or GitHub repo)'
+        required: true
+      SOURCE_BRANCH:
+        description: 'Branch or tag to checkout'
+        required: true
+        default: main
+      DEVICE_BRAND:
+        description: 'Device manufacturer (e.g., samsung)'
+        required: true
+      COMMON_NAME:
+        description: 'Common tree name (e.g., sm6225-common)'
+        required: true
+      GIT_NAME:
+        description: 'Your GitHub username'
+        required: true
+      GIT_EMAIL:
+        description: 'Your GitHub email'
+        required: true
+
+jobs:
+  generate-common-tree:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.LOS }}
+      DEVICE_BRAND: ${{ github.event.inputs.DEVICE_BRAND }}
+      COMMON_NAME: ${{ github.event.inputs.COMMON_NAME }}
+      GIT_NAME: ${{ github.event.inputs.GIT_NAME }}
+      GIT_EMAIL: ${{ github.event.inputs.GIT_EMAIL }}
+
+    steps:
+    - name: Checkout Action Code
+      uses: actions/checkout@v4
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y git cpio python3-pip
+        pip3 install --upgrade aospdtgen
+
+    - name: Clone source based on SOURCE_TYPE
+      run: |
+        echo "Cloning source repository based on SOURCE_TYPE=${{ github.event.inputs.SOURCE_TYPE }}"
+        mkdir -p ~/source
+        cd ~/source
+        if [ "${{ github.event.inputs.SOURCE_TYPE }}" = "dump" ]; then
+          git clone --depth=1 -b ${{ github.event.inputs.SOURCE_BRANCH }} ${{ github.event.inputs.SOURCE_URL }} dump_source
+          cd dump_source
+        elif [ "${{ github.event.inputs.SOURCE_TYPE }}" = "manifest" ]; then
+          git clone --depth=1 -b ${{ github.event.inputs.SOURCE_BRANCH }} ${{ github.event.inputs.SOURCE_URL }} manifest_source
+          cd manifest_source
+        elif [ "${{ github.event.inputs.SOURCE_TYPE }}" = "github_repo" ]; then
+          git clone --depth=1 -b ${{ github.event.inputs.SOURCE_BRANCH }} ${{ github.event.inputs.SOURCE_URL }} github_source
+          cd github_source
+        else
+          echo "❌ Unsupported SOURCE_TYPE: ${{ github.event.inputs.SOURCE_TYPE }}"
+          exit 1
+        fi
+
+    - name: Generate Device Common Tree
+      run: |
+        echo "Generating device common tree for ${DEVICE_BRAND}/${COMMON_NAME}"
+        python3 -m aospdtgen --type device_common .
+        mkdir -p ~/output
+        mv output/* ~/output/
+
+    - name: Cleanup Output (remove .git and temp files)
+      run: |
+        cd ~/output
+        rm -rf .git* || true
+        find . -name '*.log' -delete || true
+
+    - name: Setup Git User
+      run: |
+        git config --global user.name "${GIT_NAME}"
+        git config --global user.email "${GIT_EMAIL}"
+
+    - name: Create GitHub Repo and Push Device Common Tree
+      env:
+        GH_TOKEN: ${{ secrets.LOS }}
+      run: |
+        cd ~/output
+        gh auth login --with-token <<< "$GH_TOKEN"
+        REPO="device_${DEVICE_BRAND}_${COMMON_NAME}"
+        if gh repo view "$GIT_NAME/$REPO" > /dev/null 2>&1; then
+          echo "Repository $REPO exists, pushing changes"
+          git init
+          git remote add origin https://github.com/${GIT_NAME}/${REPO}.git
+          git checkout -b lineage-21 || git checkout lineage-21
+          git add .
+          git commit -m "${COMMON_NAME}: Update common device tree" || echo "No changes to commit"
+          git push origin lineage-21 --force
+        else
+          echo "Creating new repo $REPO"
+          gh repo create "$GIT_NAME/$REPO" --public --description "Common device tree for ${COMMON_NAME}" --source=. --remote=origin --push
+        fi
+        
