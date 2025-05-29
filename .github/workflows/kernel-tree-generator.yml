@@ -1,0 +1,79 @@
+name: Kernel Tree Generator
+
+on:
+  workflow_dispatch:
+    inputs:
+      DUMP_URL:
+        description: 'Dump repository URL'
+        required: true
+      DUMP_BRANCH:
+        description: 'Dump repository branch'
+        required: true
+      DEVICE_BRAND:
+        description: 'Device manufacturer (e.g. xiaomi)'
+        required: true
+      CODENAME:
+        description: 'Device codename (e.g. daisy)'
+        required: true
+      GIT_NAME:
+        description: 'GitHub username'
+        required: true
+      GIT_EMAIL:
+        description: 'GitHub email'
+        required: true
+
+jobs:
+  generate-kernel-tree:
+    name: Create Kernel Tree
+    if: github.event.repository.owner.id == github.event.sender.id
+    runs-on: ubuntu-latest
+
+    env:
+      GH_TOKEN: ${{ secrets.LOS }}
+      DUMP_URL: ${{ github.event.inputs.DUMP_URL }}
+      DUMP_BRANCH: ${{ github.event.inputs.DUMP_BRANCH }}
+      DEVICE_BRAND: ${{ github.event.inputs.DEVICE_BRAND }}
+      CODENAME: ${{ github.event.inputs.CODENAME }}
+      GIT_NAME: ${{ github.event.inputs.GIT_NAME }}
+      GIT_EMAIL: ${{ github.event.inputs.GIT_EMAIL }}
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Install Dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y git cpio python3-pip
+        pip3 install aospdtgen
+
+    - name: Clone Kernel Dump
+      run: |
+        mkdir -p ~/kernel_dump
+        cd ~/kernel_dump
+        git clone --depth=1 -b "$DUMP_BRANCH" "$DUMP_URL" source
+
+    - name: Generate Kernel Tree
+      run: |
+        cd ~/kernel_dump/source
+        python3 -m aospdtgen --type kernel .
+        mkdir -p ~/kernel_tree
+        mv output/* ~/kernel_tree/
+
+    - name: Setup Git
+      run: |
+        git config --global user.name "$GIT_NAME"
+        git config --global user.email "$GIT_EMAIL"
+
+    - name: Create GitHub Repo & Push Tree
+      run: |
+        cd ~/kernel_tree
+        gh auth login --with-token <<< "$GH_TOKEN"
+        REPO="kernel_${DEVICE_BRAND}_${CODENAME}"
+        gh repo create "$GIT_NAME/$REPO" --public --description "Kernel tree for $CODENAME" --source=. --remote=origin --push
+        git init
+        git checkout -b lineage-21
+        git add .
+        git commit -m "${CODENAME}: Initial kernel tree"
+        git push -u origin lineage-21 --force
+        
