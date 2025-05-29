@@ -1,141 +1,81 @@
-name: Auto LineageOS X Tree Generator
+name: Auto LineageOS Tree Generator
 
 on:
   workflow_dispatch:
     inputs:
       DUMP_URL:
-        description: 'Dump link'
+        description: 'Git repo URL of the device dump'
         required: true
-        default: ''
       DUMP_BRANCH:
-        description: 'Dump branch'
+        description: 'Branch of the dump repository'
         required: true
-        default: ''
       DEVICE_BRAND:
-        description: 'Device manufacturer'
+        description: 'Device manufacturer (e.g., xiaomi, samsung)'
         required: true
-        default: ''
       CODENAME:
-        description: 'Device codename'
+        description: 'Device codename (e.g., daisy, gale)'
         required: true
-        default: ''
       GIT_NAME:
         description: 'GitHub account user name'
         required: true
-        default: ''
       GIT_EMAIL:
         description: 'GitHub account email address'
         required: true
-        default: ''
 
 jobs:
   gen-tree:
-    name: Create LineageOS compatible tree
+    name: Generate and Upload Device Tree
     if: github.event.repository.owner.id == github.event.sender.id
     runs-on: ubuntu-latest
 
     env:
-      GITHUB_TOKEN: ${{ secrets.LOS }}
       DU: ${{ github.event.inputs.DUMP_URL }}
-      DB: ${{ github.event.inputs.DEVICE_BRAND }}
       DUB: ${{ github.event.inputs.DUMP_BRANCH }}
+      DB: ${{ github.event.inputs.DEVICE_BRAND }}
       CN: ${{ github.event.inputs.CODENAME }}
       GN: ${{ github.event.inputs.GIT_NAME }}
       GE: ${{ github.event.inputs.GIT_EMAIL }}
+      GH_TOKEN: ${{ secrets.LOS }}
 
     permissions:
       contents: write
 
     steps:
-    - name: Check Out
+    - name: Checkout this repo
       uses: actions/checkout@v4
 
-    - name: Update and install required packages
+    - name: Install Dependencies
       run: |
-        echo "📦 Updating system and installing packages..."
-        sudo apt update && sudo apt upgrade -y
-        sudo apt install -y cpio python3 python3-pip git curl
+        sudo apt update
+        sudo apt install -y git python3 python3-pip unzip gh
+        pip3 install aospdtgen
 
-    - name: Setup GitHub CLI
+    - name: Clone Dump Repository
       run: |
-        echo "🔧 Installing GitHub CLI..."
-        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-        sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-        sudo apt update && sudo apt install gh -y
+        mkdir -p ~/LOS-Generator
+        cd ~/LOS-Generator
+        git clone --depth=1 -b "$DUB" "$DU" dump
+        echo "Dump cloned to ~/LOS-Generator/dump"
 
-    - name: Cloning ROM Dump
+    - name: Generate Device Tree using aospdtgen
       run: |
-        echo "📥 Cloning ROM dump from $DU with branch $DUB..."
-        WORKDIR="/home/runner/LOS-Generator"
-        mkdir -p "$WORKDIR"
-        cd "$WORKDIR"
+        cd ~/LOS-Generator/dump
+        python3 -m aospdtgen . ../output
 
-        if git ls-remote --heads "$DU" "$DUB" | grep "$DUB" > /dev/null; then
-          git clone --depth=1 -b "$DUB" "$DU" dump
-        else
-          echo "❌ Error: Branch '$DUB' not found in repository '$DU'."
-          exit 1
-        fi
-
-    - name: Installing AOSPDTGEN
+    - name: Configure Git
       run: |
-        echo "📦 Installing aospdtgen..."
-        pip3 install --upgrade aospdtgen
+        git config --global user.name "$GN"
+        git config --global user.email "$GE"
 
-    - name: Creating LineageOS Tree
+    - name: Create and Push Device Tree to GitHub
       run: |
-        echo "🔧 Generating device tree..."
-        cd /home/runner/LOS-Generator/dump
-        python3 -m aospdtgen .
-        if [ ! -d "output" ]; then
-          echo "❌ Error: output directory not found. Device tree generation failed."
-          exit 1
-        fi
-        mv output /home/runner/LOS-Generator
-
-    - name: Setting up Git
-      run: |
-        echo "🔧 Configuring Git..."
-        git config --global user.name "${{ env.GN }}"
-        git config --global user.email "${{ env.GE }}"
-
-    - name: Upload LineageOS Tree to GitHub
-      env:
-        GH_TOKEN: ${{ secrets.LOS }}
-      run: |
-        echo "🚀 Preparing to upload the device tree to GitHub..."
-        cd /home/runner/LOS-Generator/output
+        cd ~/LOS-Generator/output
+        gh auth login --with-token <<< "$GH_TOKEN"
+        NEW_REPO="lineage_device_${DB}_${CN}"
+        gh repo create "$GN/$NEW_REPO" --public --description "LineageOS tree for $CN" --source=. --remote=origin --push
         git init
-        git checkout -b lineage-${{ env.CN }}
+        git checkout -b lineage-21
         git add .
-        git commit -s -m "${{ env.CN }}: LineageOS compatible device tree"
-
-        REPO_NAME="lineage_device_${{ env.DB }}_${{ env.CN }}"
-        REMOTE_URL="https://x-access-token:${GH_TOKEN}@github.com/${{ env.GN }}/${REPO_NAME}.git"
-
-        echo "🔍 Checking if the repository exists..."
-        if gh repo view "$REPO_NAME" --json name -q .name > /dev/null 2>&1; then
-          echo "⚠️ Repository already exists. Pushing to it..."
-          git remote add origin "$REMOTE_URL"
-          git push origin lineage-${{ env.CN }} --force
-        else
-          echo "📁 Creating new repository..."
-          gh repo create "$REPO_NAME" --public --description="LineageOS compatible device tree for ${{ env.CN }}" --confirm
-          git remote add origin "$REMOTE_URL"
-          git push origin lineage-${{ env.CN }} --set-upstream
-        fi
-
-    - name: Cleanup
-      if: always()
-      run: |
-        echo "🧹 Cleaning up..."
-        rm -rf /home/runner/LOS-Generator
-        rm -rf /tmp/existing_repo || true
-
-    - name: Workflow Complete
-      run: |
-        echo "✅ Device tree generation and upload complete!"
-        echo "📦 Codename: ${{ env.CN }}"
-        echo "🏷️ Brand: ${{ env.DB }}"
-        echo "🔗 Repo: https://github.com/${{ env.GN }}/lineage_device_${{ env.DB }}_${{ env.CN }}"
+        git commit -m "$CN: Initial LineageOS tree generated by aospdtgen"
+        git push -u origin lineage-21 --force
+        echo "✅ Device tree pushed to https://github.com/$GN/$NEW_REPO"
